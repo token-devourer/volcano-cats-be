@@ -77,13 +77,30 @@ export class VolcanoCatsRoom extends Room {
 
     if (this.gameState.status !== "lobby") {
       const existing = [...this.gameState.players.values()].find(
-        (p) => p.username === username && !p.connected
+        (p) => p.username === username && !p.connected,
       );
       if (existing) {
         this.handleReconnect(client, existing);
         return;
       }
       client.leave(4000);
+      return;
+    }
+
+    // Cegah username duplikat di lobby yang sama. Ini bisa terjadi kalau client
+    // sempat connect dua kali secara tidak sengaja (misalnya akibat bug re-mount
+    // di frontend, atau dua tab browser dengan localStorage yang sama). Tanpa guard
+    // ini, dua slot pemain dengan nama sama bisa muncul berdampingan di satu room.
+    const duplicate = [...this.gameState.players.values()].find(
+      (p) => p.username === username && p.connected,
+    );
+    if (duplicate) {
+      this.log.warn({ username }, "Rejected duplicate username join in lobby");
+      this.sendToClient(client, {
+        type: "ERROR",
+        message: `Username "${username}" sudah dipakai di room ini. Coba username lain.`,
+      });
+      client.leave(4001);
       return;
     }
 
@@ -104,7 +121,10 @@ export class VolcanoCatsRoom extends Room {
       this.gameState.hostId = client.sessionId;
     }
 
-    this.log.info({ username, count: this.gameState.players.size }, "Player joined");
+    this.log.info(
+      { username, count: this.gameState.players.size },
+      "Player joined",
+    );
 
     this.broadcastState();
     this.sendToClient(client, { type: "YOUR_HAND", cards: [] });
@@ -116,9 +136,14 @@ export class VolcanoCatsRoom extends Room {
 
     if (this.gameState.status === "lobby") {
       this.gameState.players.delete(client.sessionId);
-      this.gameState.turnOrder = this.gameState.turnOrder.filter((id) => id !== client.sessionId);
+      this.gameState.turnOrder = this.gameState.turnOrder.filter(
+        (id) => id !== client.sessionId,
+      );
 
-      if (this.gameState.hostId === client.sessionId && this.gameState.turnOrder.length > 0) {
+      if (
+        this.gameState.hostId === client.sessionId &&
+        this.gameState.turnOrder.length > 0
+      ) {
         this.gameState.hostId = this.gameState.turnOrder[0];
       }
 
@@ -128,7 +153,10 @@ export class VolcanoCatsRoom extends Room {
       newPlayers.set(client.sessionId, { ...player, connected: false });
       this.gameState = { ...this.gameState, players: newPlayers };
 
-      this.log.info({ username: player.username }, "Player disconnected mid-game");
+      this.log.info(
+        { username: player.username },
+        "Player disconnected mid-game",
+      );
 
       this.clock.setTimeout(() => {
         const p = this.gameState.players.get(client.sessionId);
@@ -151,16 +179,23 @@ export class VolcanoCatsRoom extends Room {
   private handleReconnect(client: Client, existing: Player) {
     const newPlayers = new Map(this.gameState.players);
     newPlayers.delete(existing.sessionId);
-    const updatedPlayer = { ...existing, sessionId: client.sessionId, connected: true };
+    const updatedPlayer = {
+      ...existing,
+      sessionId: client.sessionId,
+      connected: true,
+    };
     newPlayers.set(client.sessionId, updatedPlayer);
 
     this.gameState = {
       ...this.gameState,
       players: newPlayers,
       turnOrder: this.gameState.turnOrder.map((id) =>
-        id === existing.sessionId ? client.sessionId : id
+        id === existing.sessionId ? client.sessionId : id,
       ),
-      hostId: this.gameState.hostId === existing.sessionId ? client.sessionId : this.gameState.hostId,
+      hostId:
+        this.gameState.hostId === existing.sessionId
+          ? client.sessionId
+          : this.gameState.hostId,
     };
 
     this.log.info({ username: existing.username }, "Player reconnected");
@@ -194,7 +229,10 @@ export class VolcanoCatsRoom extends Room {
           },
         ],
       };
-      this.log.info({ winner: alivePlayers[0].username }, "Game finished via disconnect elimination");
+      this.log.info(
+        { winner: alivePlayers[0].username },
+        "Game finished via disconnect elimination",
+      );
     } else {
       const current = getCurrentPlayer(this.gameState);
       if (current?.sessionId === sessionId) {
@@ -218,7 +256,10 @@ export class VolcanoCatsRoom extends Room {
     const result = schema.safeParse(payload ?? {});
 
     if (!result.success) {
-      this.log.warn({ type, issues: result.error.issues }, "Invalid message payload");
+      this.log.warn(
+        { type, issues: result.error.issues },
+        "Invalid message payload",
+      );
       this.sendError(client, `Payload tidak valid untuk ${type}`);
       return;
     }
@@ -237,8 +278,17 @@ export class VolcanoCatsRoom extends Room {
           break;
         }
         case "PLAY_GANG": {
-          const data = result.data as { cardIds: string[]; targetId?: string; targetCardId?: string };
-          this.handlePlayGang(client, data.cardIds, data.targetId, data.targetCardId);
+          const data = result.data as {
+            cardIds: string[];
+            targetId?: string;
+            targetCardId?: string;
+          };
+          this.handlePlayGang(
+            client,
+            data.cardIds,
+            data.targetId,
+            data.targetCardId,
+          );
           break;
         }
         case "USE_WATER_BUCKET": {
@@ -281,9 +331,12 @@ export class VolcanoCatsRoom extends Room {
   // HANDLERS
   // ============================================================
   private handleStartGame(client: Client) {
-    if (client.sessionId !== this.gameState.hostId) throw new Error("Hanya host yang bisa mulai game!");
-    if (this.gameState.status !== "lobby") throw new Error("Game sudah berjalan!");
-    if (this.gameState.players.size < MIN_PLAYERS) throw new Error(`Minimal ${MIN_PLAYERS} pemain!`);
+    if (client.sessionId !== this.gameState.hostId)
+      throw new Error("Hanya host yang bisa mulai game!");
+    if (this.gameState.status !== "lobby")
+      throw new Error("Game sudah berjalan!");
+    if (this.gameState.players.size < MIN_PLAYERS)
+      throw new Error(`Minimal ${MIN_PLAYERS} pemain!`);
 
     this.gameState = setupGame(this.gameState);
     this.broadcastState();
@@ -292,8 +345,10 @@ export class VolcanoCatsRoom extends Room {
 
   private handleDrawCard(client: Client) {
     const current = getCurrentPlayer(this.gameState);
-    if (current?.sessionId !== client.sessionId) throw new Error("Bukan giliran kamu!");
-    if (this.gameState.pendingAction) throw new Error("Selesaikan aksi yang pending dulu!");
+    if (current?.sessionId !== client.sessionId)
+      throw new Error("Bukan giliran kamu!");
+    if (this.gameState.pendingAction)
+      throw new Error("Selesaikan aksi yang pending dulu!");
 
     const player = this.gameState.players.get(client.sessionId)!;
     if (player.isLocked) {
@@ -309,14 +364,22 @@ export class VolcanoCatsRoom extends Room {
     this.sendHandUpdate(client.sessionId);
 
     if (this.gameState.peekResult?.sessionId === client.sessionId) {
-      this.sendToClient(client, { type: "PEEK_RESULT", cards: this.gameState.peekResult.cards });
+      this.sendToClient(client, {
+        type: "PEEK_RESULT",
+        cards: this.gameState.peekResult.cards,
+      });
     }
   }
 
   private handlePlayCard(client: Client, cardId: string, targetId?: string) {
     validatePlayCard(this.gameState, client.sessionId, cardId);
 
-    this.gameState = playCard(this.gameState, client.sessionId, cardId, targetId);
+    this.gameState = playCard(
+      this.gameState,
+      client.sessionId,
+      cardId,
+      targetId,
+    );
     this.broadcastState();
     this.sendHandUpdate(client.sessionId);
 
@@ -325,15 +388,30 @@ export class VolcanoCatsRoom extends Room {
     }
 
     if (this.gameState.peekResult?.sessionId === client.sessionId) {
-      this.sendToClient(client, { type: "PEEK_RESULT", cards: this.gameState.peekResult.cards });
+      this.sendToClient(client, {
+        type: "PEEK_RESULT",
+        cards: this.gameState.peekResult.cards,
+      });
     }
   }
 
-  private handlePlayGang(client: Client, cardIds: string[], targetId?: string, targetCardId?: string) {
+  private handlePlayGang(
+    client: Client,
+    cardIds: string[],
+    targetId?: string,
+    targetCardId?: string,
+  ) {
     const current = getCurrentPlayer(this.gameState);
-    if (current?.sessionId !== client.sessionId) throw new Error("Bukan giliran kamu!");
+    if (current?.sessionId !== client.sessionId)
+      throw new Error("Bukan giliran kamu!");
 
-    this.gameState = playGang(this.gameState, client.sessionId, cardIds, targetId, targetCardId);
+    this.gameState = playGang(
+      this.gameState,
+      client.sessionId,
+      cardIds,
+      targetId,
+      targetCardId,
+    );
     this.broadcastState();
     this.sendHandUpdate(client.sessionId);
 
@@ -348,8 +426,10 @@ export class VolcanoCatsRoom extends Room {
 
   private handleWaterBucket(client: Client, insertPosition: number) {
     const pa = this.gameState.pendingAction;
-    if (!pa || pa.type !== "WATER_BUCKET_PLACE") throw new Error("Tidak ada Water Bucket pending!");
-    if (pa.initiatorId !== client.sessionId) throw new Error("Bukan kamu yang pakai Water Bucket!");
+    if (!pa || pa.type !== "WATER_BUCKET_PLACE")
+      throw new Error("Tidak ada Water Bucket pending!");
+    if (pa.initiatorId !== client.sessionId)
+      throw new Error("Bukan kamu yang pakai Water Bucket!");
 
     const lavaCatCard = pa.data?.lavaCatCard as Card;
     this.gameState = placeLavaCat(this.gameState, lavaCatCard, insertPosition);
@@ -358,8 +438,10 @@ export class VolcanoCatsRoom extends Room {
 
   private handleBribeGive(client: Client, cardId: string) {
     const pa = this.gameState.pendingAction;
-    if (!pa || pa.type !== "BRIBE_WAITING") throw new Error("Tidak ada Bribe aktif!");
-    if (pa.targetId !== client.sessionId) throw new Error("Bukan kamu yang harus kasih kartu!");
+    if (!pa || pa.type !== "BRIBE_WAITING")
+      throw new Error("Tidak ada Bribe aktif!");
+    if (pa.targetId !== client.sessionId)
+      throw new Error("Bukan kamu yang harus kasih kartu!");
 
     this.gameState = resolveBribe(this.gameState, client.sessionId, cardId);
     this.broadcastState();
@@ -369,10 +451,17 @@ export class VolcanoCatsRoom extends Room {
 
   private handlePeekSwap(client: Client, doSwap: boolean, cardId?: string) {
     const pa = this.gameState.pendingAction;
-    if (!pa || pa.type !== "PEEK_AND_SWAP_DECIDE") throw new Error("Tidak ada Peek & Swap aktif!");
-    if (pa.initiatorId !== client.sessionId) throw new Error("Bukan kamu yang main Peek & Swap!");
+    if (!pa || pa.type !== "PEEK_AND_SWAP_DECIDE")
+      throw new Error("Tidak ada Peek & Swap aktif!");
+    if (pa.initiatorId !== client.sessionId)
+      throw new Error("Bukan kamu yang main Peek & Swap!");
 
-    this.gameState = resolvePeekAndSwap(this.gameState, client.sessionId, doSwap, cardId);
+    this.gameState = resolvePeekAndSwap(
+      this.gameState,
+      client.sessionId,
+      doSwap,
+      cardId,
+    );
     this.broadcastState();
     this.sendHandUpdate(client.sessionId);
   }
@@ -384,11 +473,20 @@ export class VolcanoCatsRoom extends Room {
     if (pa.type === "FLOOD_WAITING" && !pa.data?.isTimeWarp) {
       const player = this.gameState.players.get(client.sessionId)!;
       if (!player.isAlive) throw new Error("Kamu sudah mati!");
-      if (pa.floodDiscarded?.includes(client.sessionId)) throw new Error("Kamu sudah buang kartu!");
+      if (pa.floodDiscarded?.includes(client.sessionId))
+        throw new Error("Kamu sudah buang kartu!");
 
-      this.gameState = resolveFloodDiscard(this.gameState, client.sessionId, cardId);
+      this.gameState = resolveFloodDiscard(
+        this.gameState,
+        client.sessionId,
+        cardId,
+      );
     } else if (pa.data?.isTimeWarp && pa.initiatorId === client.sessionId) {
-      this.gameState = resolveTimeWarp(this.gameState, client.sessionId, cardId);
+      this.gameState = resolveTimeWarp(
+        this.gameState,
+        client.sessionId,
+        cardId,
+      );
     } else {
       throw new Error("Bukan giliranmu untuk aksi ini!");
     }
@@ -402,17 +500,27 @@ export class VolcanoCatsRoom extends Room {
     const freezeCard = player.hand.find((c) => c.type === "FREEZE");
     if (!freezeCard) throw new Error("Tidak punya kartu Freeze!");
 
-    this.gameState = playFreeze(this.gameState, client.sessionId, freezeCard.id);
+    this.gameState = playFreeze(
+      this.gameState,
+      client.sessionId,
+      freezeCard.id,
+    );
     this.broadcastState();
     this.sendHandUpdate(client.sessionId);
   }
 
   private handleGangRainbow(client: Client, targetId: string) {
     const pa = this.gameState.pendingAction;
-    if (!pa || pa.type !== "GANG_RAINBOW_TARGET") throw new Error("Tidak ada Rainbow Gang aktif!");
-    if (pa.initiatorId !== client.sessionId) throw new Error("Bukan kamu yang main Rainbow Gang!");
+    if (!pa || pa.type !== "GANG_RAINBOW_TARGET")
+      throw new Error("Tidak ada Rainbow Gang aktif!");
+    if (pa.initiatorId !== client.sessionId)
+      throw new Error("Bukan kamu yang main Rainbow Gang!");
 
-    this.gameState = executeGangRainbow(this.gameState, client.sessionId, targetId);
+    this.gameState = executeGangRainbow(
+      this.gameState,
+      client.sessionId,
+      targetId,
+    );
     this.broadcastState();
     this.sendHandUpdate(client.sessionId);
     this.sendHandUpdate(targetId);
@@ -440,7 +548,10 @@ export class VolcanoCatsRoom extends Room {
     try {
       client.send("message", message);
     } catch (err) {
-      this.log.warn({ sessionId: client.sessionId, err }, "Failed to send to client");
+      this.log.warn(
+        { sessionId: client.sessionId, err },
+        "Failed to send to client",
+      );
     }
   }
 
