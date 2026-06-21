@@ -41,6 +41,12 @@ const RECONNECT_WINDOW_S = 60;
 const LOBBY_TIMEOUT_MS = 30 * 60 * 1000;
 const AUTO_STEP_DELAY_MS = 900;
 
+/** 5-letter room codes. I/O dropped to avoid 1/0 confusion (24^5 ≈ 8M codes). */
+const ROOM_CODE_LETTERS = "ABCDEFGHJKLMNPQRSTUVWXYZ";
+const ROOM_CODE_LENGTH = 5;
+/** Presence set key tracking every active room code (collision avoidance). */
+const ROOM_IDS_KEY = "vc_room_ids";
+
 type Timer = { clear(): void };
 
 export class VolcanoCatsRoom extends Room {
@@ -58,7 +64,12 @@ export class VolcanoCatsRoom extends Room {
   // ------------------------------------------------------------
   // lifecycle
   // ------------------------------------------------------------
-  override onCreate() {
+  override async onCreate() {
+    // Replace Colyseus's 9-char nanoid with a friendly 5-letter code. The
+    // matchmaker reads `this.roomId` back AFTER onCreate, so reassigning it
+    // here propagates to the room listing + `joinById(code)` automatically.
+    this.roomId = await this.generateRoomCode();
+
     this.maxClients = MAX_PLAYERS;
     this.autoDispose = true;
     this.log = roomLogger(this.roomId);
@@ -74,6 +85,25 @@ export class VolcanoCatsRoom extends Room {
     }, LOBBY_TIMEOUT_MS);
 
     this.log.info("Room created");
+  }
+
+  /**
+   * Mint a unique 5-uppercase-letter room code, guarded against collisions via
+   * the shared presence set (works across processes when Redis presence is in
+   * use; LocalPresence in single-process dev).
+   */
+  private async generateRoomCode(): Promise<string> {
+    const gen = () =>
+      Array.from({ length: ROOM_CODE_LENGTH }, () => {
+        const i = Math.floor(Math.random() * ROOM_CODE_LETTERS.length);
+        return ROOM_CODE_LETTERS[i];
+      }).join("");
+
+    let id = gen();
+    // sismember returns 1 (truthy) if the code is already in use.
+    while (await this.presence.sismember(ROOM_IDS_KEY, id)) id = gen();
+    await this.presence.sadd(ROOM_IDS_KEY, id);
+    return id;
   }
 
   override onJoin(client: Client, options: unknown) {
@@ -147,8 +177,14 @@ export class VolcanoCatsRoom extends Room {
     }
   }
 
-  override onDispose() {
+  override async onDispose() {
     this.clearFreezeTimer();
+    // Release the room code so it can be reused.
+    try {
+      await this.presence.srem(ROOM_IDS_KEY, this.roomId);
+    } catch {
+      /* best-effort — the room is going away regardless */
+    }
     this.log.info("Room disposed");
   }
 
