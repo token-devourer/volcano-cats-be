@@ -43,8 +43,8 @@ export const floodDiscardSchema = z.object({
 
 export const freezePlaySchema = z.object({});
 
-export const gangRainbowConfirmSchema = z.object({
-  targetId: sessionIdSchema,
+export const toggleAwaySchema = z.object({
+  away: z.boolean(),
 });
 
 export const joinOptionsSchema = z.object({
@@ -64,7 +64,7 @@ export const MESSAGE_SCHEMAS = {
   PEEK_SWAP_DECISION: peekSwapDecisionSchema,
   FLOOD_DISCARD: floodDiscardSchema,
   FREEZE_PLAY: freezePlaySchema,
-  GANG_RAINBOW_CONFIRM: gangRainbowConfirmSchema,
+  TOGGLE_AWAY: toggleAwaySchema,
 } as const;
 
 export type MessageType = keyof typeof MESSAGE_SCHEMAS;

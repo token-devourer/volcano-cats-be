@@ -1,9 +1,8 @@
-# 🌋 Volcano Cats — Backend
+# 🌋 Volcano Cats — Backend (v2)
 
 Game server untuk Volcano Cats. Setup di-refactor mengikuti pola modern: ESM + `tsx` (no build step) + Zod validation + pino logging.
 
 ## Tech Stack
-
 - **Runtime**: Node.js 20+ (ESM native, `"type": "module"`)
 - **Game Server**: Colyseus `^0.16`
 - **Dev/Run**: `tsx` — jalankan TypeScript langsung, tanpa compile step terpisah
@@ -11,7 +10,7 @@ Game server untuk Volcano Cats. Setup di-refactor mengikuti pola modern: ESM + `
 - **Logging**: pino (+ pino-pretty untuk dev)
 - **Deploy**: Railway
 
-## Revision 2 : Kenapa Beda dari Versi Sebelumnya?
+## Kenapa Beda dari Versi Sebelumnya?
 
 Versi sebelumnya (CommonJS + `tsc` build step) gagal deploy di Railway. Penyebab paling mungkin:
 
@@ -21,7 +20,6 @@ Versi sebelumnya (CommonJS + `tsc` build step) gagal deploy di Railway. Penyebab
 4. **`require()` dinamis** di tengah kode TypeScript — anti-pattern yang rawan gagal di environment compiled/bundled.
 
 Perbaikan di v2:
-
 - ✅ `httpServer.listen(PORT, "0.0.0.0", ...)` — eksplisit
 - ✅ Hapus monitor & realtime listing API yang tidak esensial
 - ✅ `tsx` menjalankan source langsung — **tidak ada build step sama sekali**, jadi tidak ada kemungkinan mismatch antara build output dan start command
@@ -86,29 +84,7 @@ Ini lapisan keamanan tambahan di luar validasi logic game (`validatePlayCard` dk
 
 ## WebSocket Messages
 
-### Client → Server
-
-| Type                   | Payload                                   | Keterangan                                    |
-| ---------------------- | ----------------------------------------- | --------------------------------------------- |
-| `START_GAME`           | -                                         | Host mulai game                               |
-| `DRAW_CARD`            | -                                         | Draw kartu dari deck                          |
-| `PLAY_CARD`            | `{ cardId, targetId? }`                   | Main 1 kartu aksi                             |
-| `PLAY_GANG`            | `{ cardIds[], targetId?, targetCardId? }` | Main 2-5 gang card                            |
-| `USE_WATER_BUCKET`     | `{ insertPosition }`                      | Taruh Lava Cat di posisi X                    |
-| `BRIBE_GIVE_CARD`      | `{ cardId }`                              | Kasih kartu saat kena Bribe                   |
-| `PEEK_SWAP_DECISION`   | `{ swap, cardId? }`                       | Keputusan setelah Peek & Swap                 |
-| `FLOOD_DISCARD`        | `{ cardId }`                              | Buang kartu saat Flood / ambil saat Time Warp |
-| `FREEZE_PLAY`          | -                                         | Mainkan Freeze sebagai interrupt              |
-| `GANG_RAINBOW_CONFIRM` | `{ targetId }`                            | Konfirmasi target Rainbow Gang                |
-
-### Server → Client
-
-| Type                | Payload             | Keterangan                        |
-| ------------------- | ------------------- | --------------------------------- |
-| `GAME_STATE_UPDATE` | `ClientGameState`   | Update state (broadcast ke semua) |
-| `YOUR_HAND`         | `{ cards: Card[] }` | Kartu di tangan kamu (private)    |
-| `PEEK_RESULT`       | `{ cards: Card[] }` | Hasil Spy Cat / Peek & Swap       |
-| `ERROR`             | `{ message }`       | Error message                     |
+Sama seperti sebelumnya — lihat tabel di README frontend untuk daftar lengkap message types.
 
 ## Catatan Versi Colyseus
 
@@ -117,23 +93,3 @@ Saya pakai `@colyseus/core@^0.16` + `@colyseus/ws-transport@^0.16` (bukan `^0.17
 1. Cek [Colyseus changelog](https://docs.colyseus.io/changelog) untuk breaking changes
 2. Bump versi di `package.json`
 3. `npm install` lalu `npm run typecheck` — kalau ada API yang berubah, TypeScript akan langsung kasih tahu di mana
-
-## Game Rules Summary
-
-- 2-10 pemain
-- Setiap pemain dapat 6 kartu + 1 Water Bucket
-- Draw kartu di akhir giliran
-- Kena Lava Cat tanpa Water Bucket = MATI
-- Pemain terakhir yang hidup = MENANG
-
-### Kartu Spesial Baru
-
-- **Reverse**: Balik arah giliran
-- **Sniper**: Paksa pemain lain draw sekarang
-- **Peek & Swap**: Lihat kartu atas deck, boleh swap
-- **Bunker**: Shield sekali dari efek negatif
-- **Pickpocket**: Steal kartu random dari target
-- **Flood**: Semua buang 1 kartu
-- **Time Warp**: Ambil kartu dari discard pile
-- **Lockdown**: Target tidak bisa main kartu giliran berikutnya
-- **Gang Cards**: 2=steal random, 3=steal pilihan, 4=steal semua, 5 rainbow=swap tangan

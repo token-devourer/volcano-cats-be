@@ -19,19 +19,46 @@ import {
 // ============================================================
 // DECK BUILDER
 // ============================================================
+// Sebelumnya: deck SELALU pakai semua kartu non-bahaya dari CARD_DEFINITIONS
+// (96 kartu), berapa pun jumlah pemainnya. Untuk 2 pemain itu artinya deck
+// 87+ kartu dengan cuma 1 Lava Cat di dalamnya — terlalu encer, game jadi
+// kebanyakan draw kartu aman dan deck bisa habis sebelum Lava Cat ditemukan.
+//
+// Sekarang: jumlah kartu non-bahaya yang dimasukkan scale dengan playerCount,
+// supaya rasio "kartu berbahaya : total deck" tetap terasa di semua ukuran
+// pemain. Setiap jenis kartu tetap proporsional terhadap definisi count
+// aslinya (jadi variety kartu tidak berubah, cuma jumlah total yang disesuaikan).
+function targetDeckSize(playerCount: number): number {
+  // Baseline ala Exploding Kittens asli: total deck ~ (playerCount * 8) + slack kecil
+  // supaya tiap pemain dapat beberapa kali kesempatan draw sebelum deck habis,
+  // tapi tetap cukup tipis supaya Lava Cat punya peluang realistis muncul.
+  return playerCount * 9 + 6;
+}
+
 export function buildDeck(playerCount: number): Card[] {
-  const cards: Card[] = [];
+  const fullPool: Card[] = [];
 
   for (const def of CARD_DEFINITIONS) {
     if (def.type === "LAVA_CAT") continue; // dimasukkan terpisah
     if (def.type === "WATER_BUCKET") continue; // dibagi ke pemain dulu
 
     for (let i = 0; i < def.count; i++) {
-      cards.push({ id: randomUUID(), type: def.type, name: def.name, description: def.description, emoji: def.emoji });
+      fullPool.push({ id: randomUUID(), type: def.type, name: def.name, description: def.description, emoji: def.emoji });
     }
   }
 
-  return shuffle(cards);
+  const target = targetDeckSize(playerCount);
+
+  // Kalau target lebih besar dari pool penuh (game dengan banyak pemain), pakai semua kartu yang ada.
+  if (target >= fullPool.length) {
+    return shuffle(fullPool);
+  }
+
+  // Ambil subset proporsional: shuffle pool penuh lalu potong sejumlah target.
+  // Karena pool sudah berisi semua jenis kartu dengan rasio aslinya, subset acak
+  // ini secara statistik tetap mempertahankan variety yang representatif tanpa
+  // perlu hitung proporsi per-jenis secara manual.
+  return shuffle(fullPool).slice(0, target);
 }
 
 export function buildLavaCats(count: number): Card[] {
@@ -97,9 +124,14 @@ export function setupGame(state: GameState): GameState {
     players.set(pid, { ...player, hand });
   }
 
-  // Masukkan sisa water bucket ke deck (8 total - playerCount yang sudah dibagi)
-  const remainingWaterBuckets = Math.max(0, 8 - playerCount);
-  for (let i = 0; i < remainingWaterBuckets; i++) {
+  // Masukkan sisa water bucket ke deck.
+  // Total Water Bucket di game = playerCount (1 per tangan awal) + extra di deck.
+  // Extra di-cap supaya rasio Water:Lava tetap masuk akal di semua ukuran pemain —
+  // sebelumnya pakai angka fixed (8 total) yang absurd untuk 2 pemain (8 Water vs 1 Lava).
+  // Formula: 2 extra untuk game kecil (2-4 pemain), naik bertahap untuk game besar,
+  // supaya game tetap solvable tapi tegang di skala berapa pun.
+  const extraWaterBuckets = playerCount <= 4 ? 2 : playerCount <= 7 ? 3 : 4;
+  for (let i = 0; i < extraWaterBuckets; i++) {
     deck.push({
       id: randomUUID(),
       type: "WATER_BUCKET",
@@ -302,7 +334,33 @@ export function placeLavaCat(state: GameState, lavaCatCard: Card, position: numb
 }
 
 // ============================================================
-// PLAY CARD
+// FREEZE WINDOW DURATION
+// ============================================================
+// Berapa lama (ms) pemain lain punya kesempatan menekan tombol Freeze
+// sebelum efek kartu benar-benar dieksekusi. Cukup singkat supaya game
+// tetap terasa cepat, tapi cukup panjang untuk bisa di-react secara manual.
+export const FREEZE_WINDOW_MS = 4000;
+
+// Kartu-kartu yang efeknya langsung terjadi tanpa pending action sendiri
+// (tidak menunggu input tambahan dari pemain lain) — kartu ini butuh
+// freeze window eksplisit karena kalau langsung resolve instan, tidak ada
+// jeda sama sekali bagi pemain lain untuk sempat menekan Freeze.
+//
+// Kartu seperti Bribe/Flood/Water Bucket Place TIDAK butuh window terpisah
+// karena mereka sudah secara alami menunggu input (pendingAction lain) —
+// jeda menunggu itu sendiri sudah jadi kesempatan untuk Freeze.
+const INSTANT_EFFECT_CARDS = new Set([
+  "NAP_TIME", "ERUPTION", "SPY_CAT", "EARTHQUAKE", "REVERSE",
+  "SNIPER", "BUNKER", "TIME_WARP", "LOCKDOWN", "PICKPOCKET",
+]);
+
+// ============================================================
+// PLAY CARD — entry point. Keluarkan kartu dari tangan, lalu:
+//   - kalau kartu termasuk INSTANT_EFFECT_CARDS → masuk freeze window dulu,
+//     efek sebenarnya baru dieksekusi lewat resolveDeferredEffect() setelah
+//     window habis (dipanggil dari room timer) atau di-skip semua pemain.
+//   - kalau kartu punya pending action sendiri (Bribe, Flood, dst) → tetap
+//     pakai jalur lama, karena sudah otomatis kasih jeda lewat menunggu input.
 // ============================================================
 export function playCard(
   state: GameState,
@@ -325,53 +383,106 @@ export function playCard(
   // Tambah ke discard pile
   newState = { ...newState, discardPile: [...newState.discardPile, card] };
 
-  // Eksekusi efek kartu
+  if (INSTANT_EFFECT_CARDS.has(card.type)) {
+    // Validasi syarat target di awal (sebelum masuk window), supaya error
+    // muncul cepat kalau memang invalid, bukan setelah nunggu 4 detik percuma.
+    if ((card.type === "SNIPER" || card.type === "PICKPOCKET" || card.type === "LOCKDOWN") && !targetId) {
+      throw new Error(`${card.name} butuh target!`);
+    }
+
+    const player2 = state.players.get(playerId)!;
+    return {
+      ...newState,
+      pendingAction: {
+        type: "AWAITING_FREEZE",
+        initiatorId: playerId,
+        targetId,
+        deferredEffect: { cardType: card.type, initiatorId: playerId, targetId },
+        freezeWindowEndsAt: Date.now() + FREEZE_WINDOW_MS,
+      },
+      log: [...newState.log, addLog(`${player2.username} memainkan ${card.name}... (bisa di-Freeze)`, "action")],
+    };
+  }
+
+  // Kartu dengan pending action sendiri — jalur lama, eksekusi langsung
+  // (jeda menunggu input dari pendingAction itu sendiri sudah jadi window react).
   switch (card.type) {
-    case "NAP_TIME":
-      newState = applyNapTime(newState, playerId);
-      break;
-    case "ERUPTION":
-      newState = applyEruption(newState, playerId);
-      break;
-    case "SPY_CAT":
-      newState = applySpyCat(newState, playerId);
-      break;
-    case "EARTHQUAKE":
-      newState = applyEarthquake(newState, playerId);
-      break;
     case "BRIBE":
       if (!targetId) throw new Error("Bribe butuh target!");
       newState = applyBribe(newState, playerId, targetId);
       break;
-    case "REVERSE":
-      newState = applyReverse(newState, playerId);
-      break;
-    case "SNIPER":
-      if (!targetId) throw new Error("Sniper butuh target!");
-      newState = applySniper(newState, playerId, targetId);
-      break;
     case "PEEK_AND_SWAP":
       newState = applyPeekAndSwap(newState, playerId);
-      break;
-    case "BUNKER":
-      newState = applyBunker(newState, playerId);
-      break;
-    case "PICKPOCKET":
-      if (!targetId) throw new Error("Pickpocket butuh target!");
-      newState = applyPickpocket(newState, playerId, targetId);
       break;
     case "FLOOD":
       newState = applyFlood(newState, playerId);
       break;
-    case "TIME_WARP":
-      newState = applyTimeWarp(newState, playerId);
-      break;
-    case "LOCKDOWN":
-      if (!targetId) throw new Error("Lockdown butuh target!");
-      newState = applyLockdown(newState, playerId, targetId);
-      break;
     default:
       throw new Error(`Kartu ${card.type} tidak bisa dimainkan sendiri!`);
+  }
+
+  return newState;
+}
+
+// ============================================================
+// RESOLVE DEFERRED EFFECT — dipanggil setelah freeze window habis
+// (dari room timer) tanpa ada yang nge-Freeze. Mengeksekusi efek
+// sebenarnya dari kartu yang sempat "ditahan" di AWAITING_FREEZE.
+// ============================================================
+export function resolveDeferredEffect(state: GameState): GameState {
+  const pa = state.pendingAction;
+  if (!pa || pa.type !== "AWAITING_FREEZE" || !pa.deferredEffect) {
+    throw new Error("Tidak ada efek yang ditunda untuk di-resolve!");
+  }
+
+  const { cardType, initiatorId, targetId, targetCardId } = pa.deferredEffect;
+
+  // Bersihkan pendingAction dulu sebelum eksekusi efek, supaya fungsi apply*
+  // di bawah bisa set pendingAction baru sendiri kalau perlu (mis. gang rainbow target).
+  let newState: GameState = { ...state, pendingAction: null };
+
+  switch (cardType) {
+    case "NAP_TIME":
+      newState = applyNapTime(newState, initiatorId);
+      break;
+    case "ERUPTION":
+      newState = applyEruption(newState, initiatorId);
+      break;
+    case "SPY_CAT":
+      newState = applySpyCat(newState, initiatorId);
+      break;
+    case "EARTHQUAKE":
+      newState = applyEarthquake(newState, initiatorId);
+      break;
+    case "REVERSE":
+      newState = applyReverse(newState, initiatorId);
+      break;
+    case "SNIPER":
+      newState = applySniper(newState, initiatorId, targetId!);
+      break;
+    case "BUNKER":
+      newState = applyBunker(newState, initiatorId);
+      break;
+    case "TIME_WARP":
+      newState = applyTimeWarp(newState, initiatorId);
+      break;
+    case "LOCKDOWN":
+      newState = applyLockdown(newState, initiatorId, targetId!);
+      break;
+    case "PICKPOCKET":
+      newState = applyPickpocket(newState, initiatorId, targetId!);
+      break;
+    case "GANG_PAIR":
+      newState = executeGangPair(newState, initiatorId, targetId!);
+      break;
+    case "GANG_TRIPLE":
+      newState = executeGangTriple(newState, initiatorId, targetId!, targetCardId);
+      break;
+    case "GANG_QUAD":
+      newState = executeGangQuad(newState, initiatorId);
+      break;
+    default:
+      throw new Error(`Tidak tahu cara resolve efek untuk: ${cardType}`);
   }
 
   return newState;
@@ -385,18 +496,32 @@ export function playFreeze(state: GameState, playerId: string, freezeCardId: str
   const cardIdx = player.hand.findIndex((c) => c.id === freezeCardId && c.type === "FREEZE");
   if (cardIdx === -1) throw new Error("Tidak punya kartu Freeze!");
 
+  if (!state.pendingAction) {
+    throw new Error("Tidak ada aksi yang sedang berjalan untuk di-Freeze!");
+  }
+  if (state.pendingAction.initiatorId === playerId) {
+    throw new Error("Tidak bisa nge-Freeze aksimu sendiri!");
+  }
+
   const card = player.hand[cardIdx];
   const newHand = player.hand.filter((_, i) => i !== cardIdx);
   const newPlayers = new Map(state.players);
   newPlayers.set(playerId, { ...player, hand: newHand });
 
-  // Batalkan pending action yang ada
+  const initiator = state.players.get(state.pendingAction.initiatorId);
+
+  // Batalkan pending action yang ada (termasuk efek kartu yang sedang ditahan
+  // di AWAITING_FREEZE — kartu tetap masuk discard pile, tapi efeknya tidak
+  // pernah dieksekusi karena pendingAction di-null-kan di sini).
   return {
     ...state,
     players: newPlayers,
     discardPile: [...state.discardPile, card],
     pendingAction: null,
-    log: [...state.log, addLog(`${player.username} memainkan Freeze! ❄️ Aksi dibatalkan!`, "action")],
+    log: [...state.log, addLog(
+      `${player.username} memainkan Freeze! ❄️ Aksi ${initiator?.username ?? "seseorang"} dibatalkan!`,
+      "action"
+    )],
   };
 }
 
@@ -441,42 +566,68 @@ export function playGang(
   };
 
   if (isRainbow) {
-    // x5 rainbow — swap tangan dengan target
+    // x5 rainbow — swap tangan dengan target. Selalu butuh target (tidak ada
+    // skenario rainbow tanpa target), jadi langsung masuk freeze window.
     if (!targetId) {
-      newState = {
-        ...newState,
-        pendingAction: { type: "GANG_RAINBOW_TARGET", initiatorId: playerId },
-        log: [...newState.log, addLog(`${player.username} main Rainbow Gang! 🌈 Pilih target untuk swap tangan!`, "action")],
-      };
-    } else {
-      newState = executeGangRainbow(newState, playerId, targetId);
+      throw new Error("Rainbow Gang butuh target!");
     }
+    const player2 = state.players.get(playerId)!;
+    newState = {
+      ...newState,
+      pendingAction: {
+        type: "AWAITING_FREEZE",
+        initiatorId: playerId,
+        targetId,
+        deferredEffect: { cardType: "GANG_RAINBOW", initiatorId: playerId, targetId },
+        freezeWindowEndsAt: Date.now() + FREEZE_WINDOW_MS,
+      },
+      log: [...newState.log, addLog(`${player2.username} main Rainbow Gang! 🌈 (bisa di-Freeze)`, "action")],
+    };
   } else if (count === 4) {
-    // x4 — steal dari semua pemain hidup
-    newState = executeGangQuad(newState, playerId);
+    // x4 — steal dari semua pemain hidup, tidak butuh target spesifik
+    const player2 = state.players.get(playerId)!;
+    newState = {
+      ...newState,
+      pendingAction: {
+        type: "AWAITING_FREEZE",
+        initiatorId: playerId,
+        deferredEffect: { cardType: "GANG_QUAD", initiatorId: playerId },
+        freezeWindowEndsAt: Date.now() + FREEZE_WINDOW_MS,
+      },
+      log: [...newState.log, addLog(`${player2.username} main Quad Gang! 🔥 (bisa di-Freeze)`, "action")],
+    };
   } else if (count === 3) {
-    // x3 — steal kartu PILIHAN SENDIRI milik initiator diberikan? Tidak — steal random dari target
-    // (client tidak bisa lihat hand lawan, jadi triple = steal random juga, bedanya quad mengincar 1 target spesifik)
     if (!targetId) {
-      newState = {
-        ...newState,
-        pendingAction: { type: "GANG_TRIPLE_TARGET", initiatorId: playerId },
-        log: [...newState.log, addLog(`${player.username} main Triple Gang! Pilih target!`, "action")],
-      };
-    } else {
-      newState = executeGangTriple(newState, playerId, targetId, targetCardId);
+      throw new Error("Triple Gang butuh target!");
     }
+    const player2 = state.players.get(playerId)!;
+    newState = {
+      ...newState,
+      pendingAction: {
+        type: "AWAITING_FREEZE",
+        initiatorId: playerId,
+        targetId,
+        deferredEffect: { cardType: "GANG_TRIPLE", initiatorId: playerId, targetId, targetCardId },
+        freezeWindowEndsAt: Date.now() + FREEZE_WINDOW_MS,
+      },
+      log: [...newState.log, addLog(`${player2.username} main Triple Gang! 🎯 (bisa di-Freeze)`, "action")],
+    };
   } else {
-    // x2 — steal random dari target
     if (!targetId) {
-      newState = {
-        ...newState,
-        pendingAction: { type: "GANG_PAIR_TARGET", initiatorId: playerId },
-        log: [...newState.log, addLog(`${player.username} main Pair Gang! Pilih target!`, "action")],
-      };
-    } else {
-      newState = executeGangPair(newState, playerId, targetId);
+      throw new Error("Pair Gang butuh target!");
     }
+    const player2 = state.players.get(playerId)!;
+    newState = {
+      ...newState,
+      pendingAction: {
+        type: "AWAITING_FREEZE",
+        initiatorId: playerId,
+        targetId,
+        deferredEffect: { cardType: "GANG_PAIR", initiatorId: playerId, targetId },
+        freezeWindowEndsAt: Date.now() + FREEZE_WINDOW_MS,
+      },
+      log: [...newState.log, addLog(`${player2.username} main Pair Gang! 👥 (bisa di-Freeze)`, "action")],
+    };
   }
 
   return newState;
@@ -902,11 +1053,65 @@ function applyLockdown(state: GameState, playerId: string, targetId: string): Ga
 }
 
 // ============================================================
-// VALIDATE ACTION
+// AUTO-PLAY — untuk pemain yang sedang away/offline
 // ============================================================
+// Dipanggil dari room saat giliran jatuh ke pemain yang sedang away atau
+// disconnected. Strategi auto-play sengaja dibuat MINIMAL (cuma draw),
+// bukan mencoba "main pintar" — karena AI strategi penuh di luar scope,
+// dan draw-only adalah perilaku paling aman/predictable: tidak akan
+// merugikan pemain lain secara tidak terduga, dan kalau pemain kembali
+// online, hand mereka masih utuh (tidak ada kartu strategis yang
+// "terbuang" otomatis tanpa sepengetahuan mereka).
+//
+// Urutan auto-play untuk satu giliran:
+//   1. Draw 1 kartu dari deck
+//   2a. Kalau bukan Lava Cat → giliran otomatis lanjut (sudah ditangani drawCard)
+//   2b. Kalau Lava Cat & punya Water Bucket → otomatis pakai, taruh balik
+//       Lava Cat di POSISI ACAK dalam deck (sesuai permintaan: "menaruh
+//       lava secara acak")
+//   2c. Kalau Lava Cat & TIDAK punya Water Bucket → mati seperti biasa
+//       (drawCard sudah handle ini)
+//
+// Catatan: kalau pemain away/offline kena pendingTurns > 1 (habis kena
+// Eruption), fungsi ini cuma resolve SATU draw per pemanggilan — room
+// yang bertanggung jawab memanggil ulang fungsi ini selama masih giliran
+// pemain yang sama (pendingTurns belum habis) dan pemain itu masih away/offline.
+export function executeAutoTurn(state: GameState, playerId: string): GameState {
+  let newState = state;
+
+  const drawResult = drawCard(newState, playerId);
+  newState = drawResult.state;
+
+  // Kalau drawCard menghasilkan pending Water Bucket placement untuk pemain
+  // auto-play ini, langsung resolve dengan posisi ACAK dalam deck.
+  if (
+    newState.pendingAction?.type === "WATER_BUCKET_PLACE" &&
+    newState.pendingAction.initiatorId === playerId
+  ) {
+    const lavaCatCard = newState.pendingAction.data?.lavaCatCard as Card;
+    const randomPosition = Math.floor(Math.random() * (newState.deck.length + 1));
+    newState = placeLavaCat(newState, lavaCatCard, randomPosition);
+  }
+
+  return newState;
+}
+
+// Cek apakah giliran sekarang harus di-auto-play (pemain away ATAU disconnected).
+export function shouldAutoPlay(state: GameState): boolean {
+  if (state.status !== "playing") return false;
+  if (state.pendingAction) return false; // ada pending action lain yang nunggu resolve (mis. AWAITING_FREEZE dari pemain lain)
+  const current = getCurrentPlayer(state);
+  if (!current) return false;
+  return current.away || !current.connected;
+}
+
+
 export function validatePlayCard(state: GameState, playerId: string, cardId: string): void {
   if (state.status !== "playing") throw new Error("Game belum mulai!");
-  if (state.pendingAction && state.pendingAction.type !== "FREEZE_WINDOW")
+  // Setiap pendingAction (termasuk AWAITING_FREEZE) memblokir kartu BIASA dimainkan —
+  // Freeze sendiri punya jalur validasi terpisah lewat playFreeze(), tidak lewat sini,
+  // jadi tidak perlu pengecualian apa pun di sini.
+  if (state.pendingAction)
     throw new Error("Ada aksi yang menunggu penyelesaian!");
 
   const currentPlayer = getCurrentPlayer(state);
@@ -937,6 +1142,7 @@ export function serializeForClient(state: GameState, viewerId?: string): ClientG
       hasBunker: p.hasBunker,
       isLocked: p.isLocked,
       connected: p.connected,
+      away: p.away,
     };
   });
 

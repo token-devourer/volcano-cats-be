@@ -62,7 +62,7 @@ export const CARD_DEFINITIONS: CardDefinition[] = [
     name: "Water Bucket",
     emoji: "💧",
     description: "Selamatkan diri dari Lava Cat. Taruh balik Lava Cat di posisi manapun dalam deck.",
-    count: 8,
+    count: 0, // dimasukkan dinamis berdasarkan jumlah pemain — lihat WATER_BUCKET_EXTRA di setupGame
   },
 
   // --- ACTION (classic renames) ---

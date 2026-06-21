@@ -11,6 +11,10 @@ export interface Player {
   hasBunker: boolean;       // Bunker card di depan player
   isLocked: boolean;        // kena Lockdown, skip main kartu
   connected: boolean;
+  // Status AFK manual — pemain sendiri yang toggle ini ("aku away sebentar").
+  // Berbeda dari `connected: false` (terdeteksi otomatis dari disconnect).
+  // Baik away maupun disconnected memicu auto-play untuk giliran pemain ini.
+  away: boolean;
 }
 
 // ============================================================
@@ -27,7 +31,19 @@ export type PendingActionType =
   | "GANG_QUAD_EXECUTING"   // steal dari semua
   | "GANG_RAINBOW_TARGET"   // pilih target swap tangan
   | "FLOOD_WAITING"         // nunggu semua buang kartu
-  | "FREEZE_WINDOW";        // window waktu untuk Freeze
+  | "AWAITING_FREEZE";      // window waktu untuk Freeze sebelum efek kartu dieksekusi
+
+// Deskripsi efek kartu yang ditunda selama window Freeze. Disimpan sebagai data
+// serializable (bukan closure function) supaya bisa dikirim ke client untuk
+// ditampilkan ("Budi memainkan Eruption... 3 2 1") dan supaya state tetap
+// plain-object (gampang di-log/debug).
+export interface DeferredEffect {
+  cardType: string;       // CardType dari kartu yang dimainkan
+  initiatorId: string;
+  targetId?: string;
+  targetCardId?: string;
+  cardIds?: string[];     // untuk gang combo (multi-card)
+}
 
 export interface PendingAction {
   type: PendingActionType;
@@ -36,6 +52,11 @@ export interface PendingAction {
   data?: Record<string, unknown>;
   // untuk FLOOD: track siapa yang sudah buang
   floodDiscarded?: string[];
+  // untuk AWAITING_FREEZE: efek yang akan dieksekusi setelah window selesai
+  deferredEffect?: DeferredEffect;
+  // untuk AWAITING_FREEZE: timestamp (ms epoch) kapan window berakhir —
+  // dikirim ke client supaya bisa render countdown yang akurat
+  freezeWindowEndsAt?: number;
   // untuk FREEZE window
   frozenActionType?: string;
   frozenPayload?: unknown;
@@ -92,7 +113,8 @@ export type ClientMessage =
   | { type: "FLOOD_DISCARD"; cardId: string }
   | { type: "FREEZE_PLAY" }    // main Freeze sebagai respons
   | { type: "START_GAME" }
-  | { type: "GANG_RAINBOW_CONFIRM"; targetId: string };
+  | { type: "GANG_RAINBOW_CONFIRM"; targetId: string }
+  | { type: "TOGGLE_AWAY"; away: boolean };
 
 // ============================================================
 // MESSAGES — Server → Client
@@ -118,6 +140,7 @@ export interface ClientPlayer {
   hasBunker: boolean;
   isLocked: boolean;
   connected: boolean;
+  away: boolean;
 }
 
 export interface ClientGameState {
