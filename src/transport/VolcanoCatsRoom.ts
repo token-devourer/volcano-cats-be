@@ -131,6 +131,7 @@ export class VolcanoCatsRoom extends Room {
     if (existing) {
       this.bind(client.sessionId, existing.id);
       this.game = setConnected(this.game, existing.id, true);
+      this.game.log.push({ kind: "PLAYER_RECONNECTED", playerId: existing.id });
       this.sendMsg(client, { t: "WELCOME", playerId: existing.id });
       this.pushState();
       this.runAuto();
@@ -153,6 +154,7 @@ export class VolcanoCatsRoom extends Room {
     }
 
     this.game = setConnected(this.game, pid, false);
+    this.game.log.push({ kind: "PLAYER_DISCONNECTED", playerId: pid });
     this.pushState();
     this.runAuto(); // their turn? keep the game moving
     this.log.info({ pid }, "Player disconnected mid-game");
@@ -165,6 +167,7 @@ export class VolcanoCatsRoom extends Room {
       const back = await this.allowReconnection(client, RECONNECT_WINDOW_S);
       this.bind(back.sessionId, pid);
       this.game = setConnected(this.game, pid, true);
+      this.game.log.push({ kind: "PLAYER_RECONNECTED", playerId: pid });
       this.sendMsg(back, { t: "WELCOME", playerId: pid });
       this.pushState();
       this.runAuto();
@@ -265,6 +268,7 @@ export class VolcanoCatsRoom extends Room {
       if (!again) break; // player came back / state changed during the delay
       try {
         const r = reduce(this.game, again.cmd, this.ctx(again.actorId));
+        r.state.log.push({ kind: "AUTO_PLAYED", playerId: again.actorId });
         this.commit(r.state, r.reveals);
       } catch (err) {
         this.log.error({ err: String(err) }, "Auto-play step failed");

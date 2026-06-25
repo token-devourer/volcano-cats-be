@@ -44,6 +44,8 @@ export type Phase =
       pending: PendingAction;
       /** ms epoch when the window closes and the action resolves. */
       endsAt: number;
+      /** Duration of this freeze window in ms (so the client can render the bar without hardcoding). */
+      freezeDuration: number;
       /** number of Freezes played so far; odd ⇒ action will be negated. */
       freezeCount: number;
     }

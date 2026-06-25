@@ -38,6 +38,7 @@ export function openNopeWindow(state: GameState, held: HeldAction, now: number):
       kind: "nope_window",
       pending: toPending(held),
       endsAt: now + FREEZE_WINDOW_MS,
+      freezeDuration: FREEZE_WINDOW_MS,
       freezeCount: 0,
     },
   };
@@ -60,7 +61,7 @@ export function applyFreeze(state: GameState, freezerId: string, now: number): E
   const freezeCount = state.phase.freezeCount + 1;
   s = {
     ...s,
-    phase: { ...state.phase, freezeCount, endsAt: now + FREEZE_WINDOW_MS },
+    phase: { ...state.phase, freezeCount, endsAt: now + FREEZE_WINDOW_MS, freezeDuration: FREEZE_WINDOW_MS },
   };
   const negated = freezeCount % 2 === 1;
   return { state: s, events: [{ kind: "NOPE_PLAYED", actorId: freezerId, negated }], reveals: [] };
